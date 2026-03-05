@@ -46,7 +46,7 @@ async function create() {
 
   if (taskType === 'tested') {
     storyInput = await input({ message: 'Story you tested (key or URL, enter to skip):' })
-    bugInput = await input({ message: 'Bug ID/URL you filed (enter to skip):' })
+    bugInput = await input({ message: 'Bug IDs you filed (comma-separated, enter to skip):' })
     userNotes = await input({ message: 'Extra notes (enter to skip):' })
     attachmentInput = await input({ message: 'Attach file or Google Sheet? (path or URL, enter to skip):' })
   } else if (taskType === 'testcases') {
@@ -55,6 +55,7 @@ async function create() {
     attachmentInput = await input({ message: 'Attach test case file or Google Sheet? (path or URL, enter to skip):' })
   } else {
     userNotes = await input({ message: 'What did you work on? (brief description):' })
+    bugInput = await input({ message: 'Bug IDs you filed (comma-separated, enter to skip):' })
     attachmentInput = await input({ message: 'Attach file or Google Sheet? (path or URL, enter to skip):' })
   }
 
@@ -77,7 +78,8 @@ async function create() {
     }
   }
 
-  let storyDetails = null, bugDetails = null
+  let storyDetails = null
+  const bugDetailsList = []
   if (storyInput.trim()) {
     process.stdout.write(chalk.dim('  Fetching story...\r'))
     try {
@@ -88,19 +90,23 @@ async function create() {
     }
   }
   if (bugInput.trim()) {
-    process.stdout.write(chalk.dim('  Fetching bug...\r'))
-    try {
-      bugDetails = await fetchIssueDetails(config.jiraBaseUrl, auth, bugInput.trim())
-      console.log(chalk.green('✔') + ' Bug: ' + chalk.white(bugDetails.summary))
-    } catch (err) {
-      console.log(chalk.yellow('⚠') + ` Bug fetch failed: ${err.message} — continuing`)
+    const bugKeys = bugInput.split(',').map(b => b.trim()).filter(Boolean)
+    for (const bugKey of bugKeys) {
+      process.stdout.write(chalk.dim(`  Fetching bug ${bugKey}...\r`))
+      try {
+        const bugDetails = await fetchIssueDetails(config.jiraBaseUrl, auth, bugKey)
+        bugDetailsList.push(bugDetails)
+        console.log(chalk.green('✔') + ' Bug: ' + chalk.cyan(bugDetails.key) + ' — ' + chalk.white(bugDetails.summary))
+      } catch (err) {
+        console.log(chalk.yellow('⚠') + ` Bug ${bugKey} fetch failed: ${err.message} — continuing`)
+      }
     }
   }
 
   process.stdout.write(chalk.cyan('🤖 Generating description...\r'))
   let aiResult
   try {
-    aiResult = await generateDescription({ config, taskType, storyDetails, bugDetails, userNotes, attachmentInfo })
+    aiResult = await generateDescription({ config, taskType, storyDetails, bugDetailsList, userNotes, attachmentInfo })
     console.log(chalk.green('✔') + ' Description generated')
   } catch (err) {
     console.log(chalk.yellow('⚠') + ' AI failed: ' + err.message)

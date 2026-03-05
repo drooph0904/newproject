@@ -1,7 +1,16 @@
 import axios from 'axios'
-import { makeDoc, makeParagraph, makeText, makeLink, makeRule } from './adfBuilder.js'
+import { makeDoc, makeParagraph, makeText, makeLink, makeRule, makeBulletList } from './adfBuilder.js'
 
-function buildPrompt(taskType, storyDetails, bugDetails, userNotes, attachmentInfo) {
+function buildBugsBlock(bugDetailsList) {
+  if (!bugDetailsList || bugDetailsList.length === 0) return null
+  return bugDetailsList.map((bug, i) => `
+BUG ${i + 1} KEY: ${bug.key}
+BUG ${i + 1} TITLE: ${bug.summary}
+BUG ${i + 1} DESCRIPTION: ${bug.descriptionText || 'No description provided.'}
+BUG ${i + 1} STATUS: ${bug.status}`).join('\n')
+}
+
+function buildPrompt(taskType, storyDetails, bugDetailsList, userNotes, attachmentInfo) {
   const storyBlock = storyDetails ? `
 STORY KEY: ${storyDetails.key}
 STORY TITLE: ${storyDetails.summary}
@@ -9,10 +18,8 @@ STORY DESCRIPTION: ${storyDetails.descriptionText || 'No description provided.'}
 STORY TYPE: ${storyDetails.issueType}
 STORY STATUS: ${storyDetails.status}` : 'No story provided.'
 
-  const bugBlock = bugDetails ? `
-BUG KEY: ${bugDetails.key}
-BUG TITLE: ${bugDetails.summary}
-BUG DESCRIPTION: ${bugDetails.descriptionText || 'No description provided.'}` : null
+  const bugsBlock = buildBugsBlock(bugDetailsList)
+  const bugCount = bugDetailsList?.length || 0
 
   const attachBlock = attachmentInfo
     ? `I am also attaching: ${attachmentInfo.label} (${attachmentInfo.name})`
@@ -23,15 +30,16 @@ BUG DESCRIPTION: ${bugDetails.descriptionText || 'No description provided.'}` : 
   if (taskType === 'tested') {
     return `I am a QA engineer. Today I tested the following Jira story:
 ${storyBlock}
-${bugBlock ? `\nI found and filed the following bug:\n${bugBlock}` : '\nNo bugs were found during testing.'}
+${bugsBlock ? `\nI found and filed the following ${bugCount} bug(s) during testing:\n${bugsBlock}` : '\nNo bugs were found during testing.'}
 ${notesBlock}
 ${attachBlock}
 
-Write a Jira task description. Return ONLY this JSON (no backticks, no explanation):
+Write a detailed, professional Jira task description. Return ONLY this JSON (no backticks, no explanation):
 {
-  "paragraph1": "2-3 sentences: what the story was about and what I tested. Based ONLY on the story details above.",
-  "paragraph2": "${bugBlock ? '2-3 sentences: the bug I found, its nature and impact. Based ONLY on bug details above.' : '2-3 sentences: testing outcome, coverage, and result.'}",
-  "outcome": "1 sentence: final status of this testing task."
+  "summary": "4-5 sentences describing what the story is about, what specific functionality or feature I tested, what areas and user flows I covered, and the overall scope of testing. Be specific about what was validated — reference actual features, screens, or behaviors from the story description.",
+  "details": "4-5 sentences explaining my testing approach in detail — what types of testing I performed (functional, regression, edge cases, cross-browser, etc.), specific scenarios I validated, boundary conditions I checked, and how thorough the coverage was. Mention specific test scenarios where possible.",
+  ${bugsBlock ? `"bugs": "For each bug: 2-3 sentences describing what the bug is, how it manifests, what the expected vs actual behavior is, and the potential impact on users. Be specific about each bug's nature and severity.",` : ''}
+  "outcome": "2 sentences: final status of testing — whether the story passed or failed QA, how many bugs were found, and whether the story is ready for release or needs fixes first."
 }`
   }
 
@@ -41,39 +49,41 @@ ${storyBlock}
 ${notesBlock}
 ${attachBlock}
 
-Write a Jira task description. Return ONLY this JSON (no backticks, no explanation):
+Write a detailed, professional Jira task description. Return ONLY this JSON (no backticks, no explanation):
 {
-  "paragraph1": "2-3 sentences: what this story is about and what functionality needed test coverage. Based ONLY on story details above.",
-  "paragraph2": "2-3 sentences: the specific flows, scenarios, and edge cases I would cover in test cases for THIS story specifically.",
-  "outcome": "1 sentence: completion status."
+  "summary": "4-5 sentences describing what this story is about, what functionality needs test coverage, and why these test cases are important. Reference specific features and behaviors from the story.",
+  "details": "4-5 sentences explaining the specific test scenarios, user flows, edge cases, and boundary conditions I covered in the test cases. Mention positive tests, negative tests, and any data-driven scenarios. Be specific about what each group of test cases validates.",
+  "outcome": "2 sentences: completion status and total number of test cases created, plus any areas that may need additional coverage."
 }`
   }
 
   // taskType === 'other'
   return `I am a QA engineer. Today I did the following work:
 ${userNotes}
+${bugsBlock ? `\nI also found and filed the following ${bugCount} bug(s):\n${bugsBlock}` : ''}
 ${attachBlock}
 
-Write a Jira task description. Return ONLY this JSON (no backticks, no explanation):
+Write a detailed, professional Jira task description. Return ONLY this JSON (no backticks, no explanation):
 {
-  "paragraph1": "2-3 sentences: professional description of the work done.",
-  "paragraph2": "2-3 sentences: the approach, methodology, or tools involved.",
-  "outcome": "1 sentence: completion status."
+  "summary": "4-5 sentences providing a professional, detailed description of the QA work performed. Expand on what was done, why it was important, and what areas of the product it relates to. Make it sound thorough and professional.",
+  "details": "4-5 sentences explaining the approach, methodology, tools used, and specific actions taken. Include what was analyzed, reviewed, or investigated and any decisions or findings that came out of the work.",
+  ${bugsBlock ? `"bugs": "For each bug: 2-3 sentences describing what the bug is, how it manifests, what the expected vs actual behavior is, and the potential impact on users.",` : ''}
+  "outcome": "2 sentences: final status of the work — what was accomplished, any follow-ups needed, and whether any bugs were filed."
 }`
 }
 
-export async function generateDescription({ config, taskType, storyDetails, bugDetails, userNotes, attachmentInfo }) {
+export async function generateDescription({ config, taskType, storyDetails, bugDetailsList, userNotes, attachmentInfo }) {
   const response = await axios.post(
     config.aiBaseUrl + '/chat/completions',
     {
       model: config.aiModel,
-      max_tokens: 800,
+      max_tokens: 1500,
       messages: [
         {
           role: 'system',
-          content: 'You are a QA engineer writing professional Jira task descriptions. Write in first person. Be specific. Never invent details not given to you. Return ONLY valid JSON with keys: paragraph1, paragraph2, outcome. No markdown fences. No extra text.'
+          content: 'You are a senior QA engineer writing detailed, professional Jira task descriptions. Write in first person. Be specific and thorough. Never invent details not given to you — only elaborate on what is provided. Return ONLY valid JSON. No markdown fences. No extra text. Use the exact keys requested.'
         },
-        { role: 'user', content: buildPrompt(taskType, storyDetails, bugDetails, userNotes, attachmentInfo) }
+        { role: 'user', content: buildPrompt(taskType, storyDetails, bugDetailsList, userNotes, attachmentInfo) }
       ]
     },
     { headers: { 'Authorization': 'Bearer ' + config.aiApiKey, 'Content-Type': 'application/json' } }
@@ -85,27 +95,69 @@ export async function generateDescription({ config, taskType, storyDetails, bugD
   try {
     parsed = JSON.parse(raw)
   } catch {
-    parsed = { paragraph1: raw.slice(0, 500), paragraph2: '', outcome: 'Task completed.' }
+    parsed = { summary: raw.slice(0, 800), details: '', outcome: 'Task completed.' }
   }
 
   const blocks = []
-  if (parsed.paragraph1) blocks.push(makeParagraph([makeText(parsed.paragraph1)]))
-  if (parsed.paragraph2) blocks.push(makeParagraph([makeText(parsed.paragraph2)]))
-  if (parsed.outcome) blocks.push(makeParagraph([makeText(parsed.outcome, true)]))
 
-  if (storyDetails || bugDetails) blocks.push(makeRule())
+  // Summary section
+  if (parsed.summary) {
+    blocks.push(makeParagraph([makeText('Summary', true)]))
+    blocks.push(makeParagraph([makeText(parsed.summary)]))
+  }
+
+  // Details section
+  if (parsed.details) {
+    blocks.push(makeParagraph([makeText('Details', true)]))
+    blocks.push(makeParagraph([makeText(parsed.details)]))
+  }
+
+  // Bugs section
+  if (parsed.bugs) {
+    blocks.push(makeParagraph([makeText('Bugs Found', true)]))
+    blocks.push(makeParagraph([makeText(parsed.bugs)]))
+  }
+
+  // Outcome section
+  if (parsed.outcome) {
+    blocks.push(makeParagraph([makeText('Outcome', true)]))
+    blocks.push(makeParagraph([makeText(parsed.outcome)]))
+  }
+
+  // References section
+  if (storyDetails || (bugDetailsList && bugDetailsList.length > 0)) {
+    blocks.push(makeRule())
+  }
+
   if (storyDetails) {
-    blocks.push(makeParagraph([makeText('Story: ', true), makeLink(storyDetails.key, storyDetails.url)]))
+    blocks.push(makeParagraph([makeText('Story: ', true), makeLink(storyDetails.key + ' — ' + storyDetails.summary, storyDetails.url)]))
   }
-  if (bugDetails) {
-    blocks.push(makeParagraph([makeText('Bug Found: ', true), makeLink(bugDetails.key, bugDetails.url)]))
+
+  if (bugDetailsList && bugDetailsList.length > 0) {
+    for (const bug of bugDetailsList) {
+      blocks.push(makeParagraph([makeText('Bug: ', true), makeLink(bug.key + ' — ' + bug.summary, bug.url)]))
+    }
   }
+
   if (attachmentInfo?.type === 'google-sheet') {
-    blocks.push(makeParagraph([makeText('Test Cases (Google Sheet): ', true), makeLink('Open Sheet', attachmentInfo.url)]))
+    blocks.push(makeParagraph([makeText('Test Cases: ', true), makeLink('Open Google Sheet', attachmentInfo.url)]))
   }
 
   const adf = makeDoc(blocks)
-  const preview = [parsed.paragraph1, parsed.paragraph2, parsed.outcome].filter(Boolean).join('\n\n')
+
+  // Build clean preview text (no JSON keys, no quotes)
+  const previewParts = []
+  if (parsed.summary) previewParts.push('Summary\n' + parsed.summary)
+  if (parsed.details) previewParts.push('Details\n' + parsed.details)
+  if (parsed.bugs) previewParts.push('Bugs Found\n' + parsed.bugs)
+  if (parsed.outcome) previewParts.push('Outcome\n' + parsed.outcome)
+
+  if (storyDetails) previewParts.push('Story: ' + storyDetails.key + ' — ' + storyDetails.summary)
+  if (bugDetailsList?.length > 0) {
+    previewParts.push('Bugs: ' + bugDetailsList.map(b => b.key).join(', '))
+  }
+
+  const preview = previewParts.join('\n\n')
 
   return { adf, preview }
 }
