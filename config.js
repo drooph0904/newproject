@@ -24,18 +24,15 @@ function openBrowser(url) {
 export async function setup() {
   console.log(chalk.cyan('\n  qa-jira setup — Let\'s get you configured\n'))
 
-  // Step 1: Jira URL
-  console.log(chalk.dim('Step 1 of 5: Jira workspace'))
-  const jiraBaseUrl = (await input({
-    message: 'Your Jira base URL (e.g. https://yourcompany.atlassian.net):'
-  })).trim().replace(/\/$/, '')
+  const jiraBaseUrl = 'https://applicate.atlassian.net'
+  console.log(chalk.dim('  Jira workspace: ') + chalk.cyan(jiraBaseUrl))
 
-  // Step 2: Jira email
-  console.log(chalk.dim('\nStep 2 of 5: Jira email'))
+  // Step 1: Jira email
+  console.log(chalk.dim('\nStep 1 of 4: Jira email'))
   const jiraEmail = (await input({ message: 'Your Jira account email:' })).trim()
 
-  // Step 3: Jira API token
-  console.log(chalk.dim('\nStep 3 of 5: Jira API token'))
+  // Step 2: Jira API token
+  console.log(chalk.dim('\nStep 2 of 4: Jira API token'))
   console.log(chalk.white('  You need a Jira API token. Here\'s how to get one:'))
   console.log(chalk.dim('  1. Go to: ') + chalk.cyan('https://id.atlassian.com/manage-profile/security/api-tokens'))
   console.log(chalk.dim('  2. Click "Create API token"'))
@@ -76,8 +73,8 @@ export async function setup() {
     process.exit(1)
   }
 
-  // Step 4: AI provider
-  console.log(chalk.dim('\nStep 4 of 5: AI provider for description generation'))
+  // Step 3: AI provider
+  console.log(chalk.dim('\nStep 3 of 4: AI provider for description generation'))
 
   const aiProvider = await select({
     message: 'Which AI provider do you want to use?',
@@ -116,8 +113,8 @@ export async function setup() {
     aiKeyInstructions = ['Get your API key from your provider dashboard']
   }
 
-  // Step 5: AI API key
-  console.log(chalk.dim('\nStep 5 of 5: AI API key'))
+  // Step 4: AI API key
+  console.log(chalk.dim('\nStep 4 of 4: AI API key'))
   console.log(chalk.white(`  Getting your ${aiProvider} API key:`))
   aiKeyInstructions.forEach(line => console.log(chalk.dim('  ' + line)))
   console.log()
