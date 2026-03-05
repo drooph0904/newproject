@@ -1,8 +1,8 @@
 {
-  "name": "qa-jira-cli",
-  "version": "1.0.0",
-  "description": "QA daily task creator for Jira with AI-generated descriptions",
-  "bin": { "qa-jira": "./index.js" },
+  "name": "jira-cli",
+  "version": "2.0.0",
+  "description": "QA Jira CLI — create tasks, file bugs with AI, and manage issues",
+  "bin": { "jira": "./index.js" },
   "type": "module",
   "dependencies": {
     "@inquirer/prompts": "^5.0.0",

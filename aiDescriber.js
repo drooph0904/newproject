@@ -161,3 +161,102 @@ export async function generateDescription({ config, taskType, storyDetails, bugD
 
   return { adf, preview }
 }
+
+export async function generateBugDescription({ config, rawDescription }) {
+  const systemPrompt = `You are a QA engineer writing structured Jira bug reports.
+You receive a raw description of a bug and convert it into a professional structured report.
+Return ONLY valid JSON. No markdown fences. No explanation. No preamble.
+Response format:
+{
+  "title": "Short descriptive bug title, max 80 chars, starts with a verb",
+  "stepsToReproduce": ["Step 1...", "Step 2...", "Step 3..."],
+  "actualResult": "What actually happens",
+  "expectedResult": "What should happen instead",
+  "additionalContext": "Any extra context, environment info, or notes (can be empty string)"
+}`
+
+  const userPrompt = `Convert this bug description into a structured report:
+
+"${rawDescription}"
+
+Rules:
+- Title must be specific and descriptive, not generic like "Bug found"
+- Steps must be numbered, actionable, and specific
+- If steps are not clear from the description, infer reasonable steps based on the context
+- Actual result: what went wrong
+- Expected result: what the correct behavior should be
+- Return ONLY the JSON object`
+
+  let raw
+  try {
+    const response = await axios.post(
+      config.aiBaseUrl + '/chat/completions',
+      {
+        model: config.aiModel,
+        max_tokens: 600,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ]
+      },
+      {
+        headers: {
+          'Authorization': 'Bearer ' + config.aiApiKey,
+          'Content-Type': 'application/json',
+        }
+      }
+    )
+    raw = response.data.choices[0].message.content
+  } catch (err) {
+    throw new Error(`AI call failed: ${err.response?.data?.error?.message || err.message}`)
+  }
+
+  const cleaned = raw.replace(/```json|```/g, '').trim()
+  let parsed
+  try {
+    parsed = JSON.parse(cleaned)
+  } catch {
+    parsed = {
+      title: rawDescription.slice(0, 80),
+      stepsToReproduce: ['See description below'],
+      actualResult: raw.slice(0, 300),
+      expectedResult: 'Correct behavior as per requirements',
+      additionalContext: '',
+    }
+  }
+
+  const blocks = []
+
+  blocks.push(makeParagraph([makeText('Steps to Reproduce', true)]))
+  const steps = Array.isArray(parsed.stepsToReproduce) ? parsed.stepsToReproduce : [parsed.stepsToReproduce]
+  blocks.push(makeBulletList(steps))
+
+  blocks.push(makeParagraph([makeText('Actual Result', true)]))
+  blocks.push(makeParagraph([makeText(parsed.actualResult || 'See description')]))
+
+  blocks.push(makeParagraph([makeText('Expected Result', true)]))
+  blocks.push(makeParagraph([makeText(parsed.expectedResult || 'Correct behavior')]))
+
+  if (parsed.additionalContext?.trim()) {
+    blocks.push(makeParagraph([makeText('Additional Context', true)]))
+    blocks.push(makeParagraph([makeText(parsed.additionalContext)]))
+  }
+
+  const adf = makeDoc(blocks)
+
+  const preview = [
+    `Steps to Reproduce:\n${steps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`,
+    `\nActual Result:\n  ${parsed.actualResult}`,
+    `\nExpected Result:\n  ${parsed.expectedResult}`,
+    parsed.additionalContext ? `\nAdditional Context:\n  ${parsed.additionalContext}` : '',
+  ].filter(Boolean).join('\n')
+
+  return {
+    title: parsed.title || rawDescription.slice(0, 80),
+    stepsToReproduce: steps,
+    actualResult: parsed.actualResult,
+    expectedResult: parsed.expectedResult,
+    adf,
+    preview,
+  }
+}

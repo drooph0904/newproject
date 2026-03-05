@@ -1,6 +1,6 @@
-# qa-jira
+# jira
 
-QA daily task creator for Jira with AI-generated descriptions.
+QA Jira CLI — create tasks, file AI-structured bugs, and manage issues from the terminal.
 
 ## Install
 
@@ -8,33 +8,72 @@ QA daily task creator for Jira with AI-generated descriptions.
 npm install -g drooph0904/newproject
 ```
 
+After installing, link the CLI:
+
+```bash
+npm link
+```
+
 ## Setup
 
 Run the setup wizard (one-time):
 
 ```bash
-qa-jira setup
+jira setup
 ```
 
 The wizard will:
+- Configure your Jira workspace credentials
 - Open your browser to the Jira API token page
-- Open your browser to the AI key page (free tier available)
+- Set up an AI provider for description generation (free tier available)
 - Validate both credentials before saving
 
-## Usage
+## Commands
 
-Create a daily QA task:
+### `jira setup`
+
+First-time configuration. Sets up Jira credentials and AI provider.
+
+### `jira task create`
+
+Create a daily QA task under an epic:
 
 ```bash
-qa-jira create
+jira task create
 ```
 
-## What it does
+- Prompts for epic, task type (tested / wrote test cases / other), and details
+- AI generates a professional Jira task description
+- Creates the task with correct dates, labels, and status (Done)
+- Optionally attaches files or Google Sheet links
 
-1. Prompts you for an epic, task type, and details
-2. Uses AI to generate a professional Jira task description
-3. Creates the task under your epic with correct dates and status
-4. Optionally attaches files or Google Sheet links
+### `jira mk bug`
+
+Create a bug with an AI-structured description:
+
+```bash
+jira mk bug
+```
+
+- Describe the bug in your own words
+- AI converts it into structured fields: title, steps to reproduce, actual/expected result
+- Pick priority (P1/P2/P3), assignee, and optional attachment
+- Search for project and epic by name
+- Preview before creating
+- Bug is created and transitioned to In Progress
+
+### `jira rm <ID|URL>`
+
+Delete a Jira issue by key or URL:
+
+```bash
+jira rm PROJ-123
+jira rm https://company.atlassian.net/browse/PROJ-123
+```
+
+- Shows issue summary before confirming
+- Requires explicit confirmation (default: no)
+- Permanent deletion — cannot be undone
 
 ## Attachment Types
 

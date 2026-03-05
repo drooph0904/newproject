@@ -22,7 +22,7 @@ function openBrowser(url) {
 }
 
 export async function setup() {
-  console.log(chalk.cyan('\n  qa-jira setup — Let\'s get you configured\n'))
+  console.log(chalk.cyan('\n  jira setup — Let\'s get you configured\n'))
 
   const jiraBaseUrl = 'https://applicate.atlassian.net'
   console.log(chalk.dim('  Jira workspace: ') + chalk.cyan(jiraBaseUrl))
@@ -174,12 +174,12 @@ export async function setup() {
   fs.chmodSync(CONFIG_PATH, 0o600)
 
   console.log('\n' + chalk.green('  \u2714 Config saved to ~/.qa-jira/config.json'))
-  console.log(chalk.dim('  Run: ') + chalk.cyan('qa-jira create') + chalk.dim(' to log your first task.\n'))
+  console.log(chalk.dim('  Run: ') + chalk.cyan('jira task create') + chalk.dim(' to log your first task.\n'))
 }
 
 export async function getConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {
-    console.error(chalk.yellow('\u26a0') + ' Run qa-jira setup first')
+    console.error(chalk.yellow('\u26a0') + ' Run jira setup first')
     process.exit(1)
   }
   const configData = fs.readFileSync(CONFIG_PATH, 'utf-8')
