@@ -56,11 +56,18 @@ jira mk bug
 ```
 
 - Describe the bug in your own words
-- AI converts it into structured fields: title, steps to reproduce, actual/expected result
-- Pick priority (P1/P2/P3), assignee, and optional attachment
+- Pick environment (Production / Demo / Test)
+- AI converts it into structured fields: title, steps to reproduce, actual/expected result, environment
+- Pick priority (P1/P2/P3)
+- Search and assign an Assignee and Issue Owner
+- Optionally attach a file or Google Sheet link
 - Search for project and epic by name
 - Preview before creating
 - Bug is created and transitioned to In Progress
+
+> **Note:** The project you select must have "Bug" as an available issue type. If it doesn't, the CLI will tell you and you can pick a different project.
+
+> **Note:** Deleting issues (`jira rm`) requires delete permissions on the project. If you don't have them, contact your Jira admin.
 
 ### `jira rm <ID|URL>`
 
