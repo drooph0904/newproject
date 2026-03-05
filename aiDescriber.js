@@ -193,7 +193,7 @@ Rules:
       config.aiBaseUrl + '/chat/completions',
       {
         model: config.aiModel,
-        max_tokens: 1200,
+        max_tokens: 2000,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -216,19 +216,37 @@ Rules:
   try {
     parsed = JSON.parse(cleaned)
   } catch {
-    parsed = {
-      title: rawDescription.slice(0, 80),
-      stepsToReproduce: ['See description below'],
-      actualResult: raw.slice(0, 300),
-      expectedResult: 'Correct behavior as per requirements',
-      additionalContext: '',
+    // Try to salvage partial JSON by closing it
+    try {
+      // Find the last complete key-value pair and close the object
+      const partial = cleaned.replace(/,\s*"[^"]*":\s*\[?\s*"?[^"}\]]*$/, '') + '}'
+      parsed = JSON.parse(partial)
+    } catch {
+      // Complete fallback — use the raw user description, not the broken AI response
+      parsed = {
+        title: rawDescription.slice(0, 80),
+        stepsToReproduce: ['Reproduce using the description provided'],
+        actualResult: rawDescription,
+        expectedResult: 'Correct behavior as expected by the user',
+        additionalContext: '',
+      }
     }
   }
+
+  // Validate all required fields exist and are not empty
+  if (!parsed.title || parsed.title.length < 3) parsed.title = rawDescription.slice(0, 80)
+  if (!Array.isArray(parsed.stepsToReproduce) || parsed.stepsToReproduce.length === 0) {
+    parsed.stepsToReproduce = ['Reproduce using the description provided']
+  }
+  if (!parsed.actualResult || parsed.actualResult.length < 3) parsed.actualResult = rawDescription
+  if (!parsed.expectedResult || parsed.expectedResult.length < 3) parsed.expectedResult = 'Correct behavior as expected by the user'
 
   const blocks = []
 
   blocks.push(makeParagraph([makeText('Steps to Reproduce', true)]))
-  const steps = Array.isArray(parsed.stepsToReproduce) ? parsed.stepsToReproduce : [parsed.stepsToReproduce]
+  // Strip leading "1. " / "2. " etc from steps — we add our own numbering in the preview
+  const rawSteps = Array.isArray(parsed.stepsToReproduce) ? parsed.stepsToReproduce : [parsed.stepsToReproduce]
+  const steps = rawSteps.map(s => s.replace(/^\d+\.\s*/, ''))
   blocks.push(makeBulletList(steps))
 
   blocks.push(makeParagraph([makeText('Actual Result', true)]))
