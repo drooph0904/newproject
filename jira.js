@@ -29,10 +29,17 @@ export async function fetchIssueDetails(baseUrl, auth, issueKeyOrUrl) {
     key = issueKeyOrUrl.trim().toUpperCase()
   }
 
-  const response = await axios.get(
-    `${baseUrl}/rest/api/3/issue/${key}?fields=summary,description,issuetype,status`,
-    { headers: { 'Authorization': 'Basic ' + auth } }
-  )
+  let response
+  try {
+    response = await axios.get(
+      `${baseUrl}/rest/api/3/issue/${key}?fields=summary,description,issuetype,status`,
+      { headers: { 'Authorization': 'Basic ' + auth } }
+    )
+  } catch (err) {
+    if (err.response?.status === 404) throw new Error(`Issue ${key} not found`)
+    if (err.response?.status === 401) throw new Error('Jira authentication failed — run jira setup')
+    throw new Error(`Failed to fetch ${key}: ${err.response?.data?.errorMessages?.join(', ') || err.message}`)
+  }
 
   const { data } = response
   const fields = data.fields
@@ -226,9 +233,10 @@ export async function searchEpicsInProject(baseUrl, auth, projectKey, query) {
     : `project = "${projectKey}" AND issuetype = Epic ORDER BY created DESC`
 
   try {
-    const res = await axios.get(
-      `${baseUrl}/rest/api/3/search?jql=${encodeURIComponent(jql)}&fields=summary,status&maxResults=10`,
-      { headers: { 'Authorization': 'Basic ' + auth, 'Accept': 'application/json' } }
+    const res = await axios.post(
+      `${baseUrl}/rest/api/3/search/jql`,
+      { jql, fields: ['summary', 'status'], maxResults: 10 },
+      { headers: { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json', 'Accept': 'application/json' } }
     )
     return (res.data.issues || []).map(i => ({
       key: i.key,
@@ -264,12 +272,29 @@ export async function createBug(baseUrl, auth, {
   assigneeAccountId,
   label,
 }) {
-  const priorityMap = { P1: 'Highest', P2: 'High', P3: 'Medium' }
-  const jiraPriority = priorityMap[priority] || 'Medium'
+  // Use priority value directly — maps to Jira priority names (P1, P2, P3 or Highest, High, Medium)
+  const jiraPriority = priority || 'P3'
+
+  // Look up available issue types to find Bug (or fallback to Task)
+  let issueTypeName = 'Bug'
+  try {
+    const metaRes = await axios.get(
+      `${baseUrl}/rest/api/3/issue/createmeta/${projectKey}/issuetypes`,
+      { headers: { 'Authorization': 'Basic ' + auth, 'Accept': 'application/json' } }
+    )
+    const types = metaRes.data.issueTypes || metaRes.data.values || metaRes.data || []
+    const hasBug = types.some(t => t.name.toLowerCase() === 'bug')
+    if (!hasBug) {
+      const hasTask = types.some(t => t.name === 'Task')
+      issueTypeName = hasTask ? 'Task' : types[0]?.name || 'Task'
+    }
+  } catch {
+    // If meta lookup fails, try Bug anyway
+  }
 
   const fields = {
     project: { key: projectKey },
-    issuetype: { name: 'Bug' },
+    issuetype: { name: issueTypeName },
     summary,
     description,
     priority: { name: jiraPriority },
@@ -277,32 +302,31 @@ export async function createBug(baseUrl, auth, {
 
   if (assigneeAccountId) fields.assignee = { accountId: assigneeAccountId }
   if (label) fields.labels = [label]
-  if (epicKey) fields.customfield_10014 = epicKey
+  if (epicKey) fields.parent = { key: epicKey }
 
   let response
-  try {
-    response = await axios.post(
-      `${baseUrl}/rest/api/3/issue`,
-      { fields },
-      { headers: { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' } }
-    )
-  } catch (err) {
-    const fieldErrors = JSON.stringify(err.response?.data?.errors || {})
-    if (epicKey && fieldErrors.includes('customfield_10014')) {
-      delete fields.customfield_10014
-      fields['customfield_10008'] = epicKey
-      try {
-        response = await axios.post(
-          `${baseUrl}/rest/api/3/issue`,
-          { fields },
-          { headers: { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' } }
-        )
-      } catch (retryErr) {
-        const msgs = retryErr.response?.data?.errorMessages || [retryErr.message]
-        const errs = Object.values(retryErr.response?.data?.errors || {})
-        throw new Error('Bug creation failed: ' + [...msgs, ...errs].join(', '))
-      }
-    } else {
+  const headers = { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' }
+
+  // Try with parent (team-managed), then customfield_10014 (next-gen), then customfield_10008 (classic)
+  const epicStrategies = epicKey
+    ? [
+        () => { fields.parent = { key: epicKey }; delete fields.customfield_10014; delete fields.customfield_10008 },
+        () => { delete fields.parent; fields.customfield_10014 = epicKey; delete fields.customfield_10008 },
+        () => { delete fields.parent; delete fields.customfield_10014; fields.customfield_10008 = epicKey },
+      ]
+    : [() => {}]
+
+  for (let i = 0; i < epicStrategies.length; i++) {
+    epicStrategies[i]()
+    try {
+      response = await axios.post(`${baseUrl}/rest/api/3/issue`, { fields }, { headers })
+      break
+    } catch (err) {
+      const fieldErrors = JSON.stringify(err.response?.data?.errors || {})
+      const isEpicFieldError = epicKey && (
+        fieldErrors.includes('parent') || fieldErrors.includes('customfield_10014') || fieldErrors.includes('customfield_10008')
+      )
+      if (isEpicFieldError && i < epicStrategies.length - 1) continue
       const msgs = err.response?.data?.errorMessages || [err.message]
       const errs = Object.values(err.response?.data?.errors || {})
       throw new Error('Bug creation failed: ' + [...msgs, ...errs].join(', '))

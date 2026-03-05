@@ -193,7 +193,7 @@ Rules:
       config.aiBaseUrl + '/chat/completions',
       {
         model: config.aiModel,
-        max_tokens: 600,
+        max_tokens: 1200,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },

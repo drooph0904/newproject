@@ -2,7 +2,9 @@
   "name": "jira-cli",
   "version": "2.0.0",
   "description": "QA Jira CLI — create tasks, file bugs with AI, and manage issues",
-  "bin": { "jira": "./index.js" },
+  "bin": {
+    "jira": "./index.js"
+  },
   "type": "module",
   "dependencies": {
     "@inquirer/prompts": "^5.0.0",
@@ -11,5 +13,7 @@
     "dayjs": "^1.11.0",
     "form-data": "^4.0.0"
   },
-  "engines": { "node": ">=18.0.0" }
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
