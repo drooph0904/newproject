@@ -196,7 +196,7 @@ export async function deleteIssue(baseUrl, auth, issueKeyOrUrl) {
     )
   } catch (err) {
     if (err.response?.status === 403) {
-      throw new Error(`Permission denied: you may not have delete rights on ${key}. Check your Jira project permissions.`)
+      throw new Error(`Permission denied: deleting ${key} requires admin approval. Contact your Jira project admin to grant delete permissions.`)
     }
     if (err.response?.status === 404) {
       throw new Error(`Issue ${key} not found — it may have already been deleted`)
@@ -275,7 +275,7 @@ export async function createBug(baseUrl, auth, {
   // Use priority value directly — maps to Jira priority names (P1, P2, P3 or Highest, High, Medium)
   const jiraPriority = priority || 'P3'
 
-  // Look up available issue types to find Bug (or fallback to Task)
+  // Verify the project has Bug issue type
   let issueTypeName = 'Bug'
   try {
     const metaRes = await axios.get(
@@ -285,10 +285,11 @@ export async function createBug(baseUrl, auth, {
     const types = metaRes.data.issueTypes || metaRes.data.values || metaRes.data || []
     const hasBug = types.some(t => t.name.toLowerCase() === 'bug')
     if (!hasBug) {
-      const hasTask = types.some(t => t.name === 'Task')
-      issueTypeName = hasTask ? 'Task' : types[0]?.name || 'Task'
+      const available = types.map(t => t.name).join(', ')
+      throw new Error(`Project ${projectKey} does not have a "Bug" issue type. Available types: ${available}. Choose a different project that supports bugs.`)
     }
-  } catch {
+  } catch (err) {
+    if (err.message.includes('does not have')) throw err
     // If meta lookup fails, try Bug anyway
   }
 
