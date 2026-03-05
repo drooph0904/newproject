@@ -162,7 +162,7 @@ export async function generateDescription({ config, taskType, storyDetails, bugD
   return { adf, preview }
 }
 
-export async function generateBugDescription({ config, rawDescription }) {
+export async function generateBugDescription({ config, rawDescription, environment }) {
   const systemPrompt = `You are a QA engineer writing structured Jira bug reports.
 You receive a raw description of a bug and convert it into a professional structured report.
 Return ONLY valid JSON. No markdown fences. No explanation. No preamble.
@@ -260,6 +260,11 @@ Rules:
     blocks.push(makeParagraph([makeText(parsed.additionalContext)]))
   }
 
+  if (environment) {
+    blocks.push(makeParagraph([makeText('Environment', true)]))
+    blocks.push(makeParagraph([makeText(environment)]))
+  }
+
   const adf = makeDoc(blocks)
 
   const preview = [
@@ -267,6 +272,7 @@ Rules:
     `\nActual Result:\n  ${parsed.actualResult}`,
     `\nExpected Result:\n  ${parsed.expectedResult}`,
     parsed.additionalContext ? `\nAdditional Context:\n  ${parsed.additionalContext}` : '',
+    environment ? `\nEnvironment:\n  ${environment}` : '',
   ].filter(Boolean).join('\n')
 
   return {

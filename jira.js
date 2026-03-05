@@ -270,6 +270,8 @@ export async function createBug(baseUrl, auth, {
   description,
   priority,
   assigneeAccountId,
+  issueOwnerAccountId,
+  environment,
   label,
 }) {
   // Use priority value directly — maps to Jira priority names (P1, P2, P3 or Highest, High, Medium)
@@ -302,6 +304,8 @@ export async function createBug(baseUrl, auth, {
   }
 
   if (assigneeAccountId) fields.assignee = { accountId: assigneeAccountId }
+  if (issueOwnerAccountId) fields.customfield_10097 = { accountId: issueOwnerAccountId }
+  if (environment) fields.customfield_10148 = { value: environment }
   if (label) fields.labels = [label]
   if (epicKey) fields.parent = { key: epicKey }
 

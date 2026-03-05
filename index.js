@@ -102,11 +102,21 @@ async function mkBug() {
     process.exit(1)
   }
 
-  // Step 2: AI structures the description
+  // Step 2: Environment
+  const environment = await select({
+    message: 'Environment:',
+    choices: [
+      { name: 'Production', value: 'Production' },
+      { name: 'Demo', value: 'Demo' },
+      { name: 'Test', value: 'Test' },
+    ]
+  })
+
+  // Step 3: AI structures the description (includes environment)
   process.stdout.write(chalk.cyan('🤖 Structuring bug report...\r'))
   let bugAI
   try {
-    bugAI = await generateBugDescription({ config, rawDescription })
+    bugAI = await generateBugDescription({ config, rawDescription, environment })
     console.log(chalk.green('✔') + ' Bug report structured by AI')
   } catch (err) {
     console.log(chalk.yellow('⚠ AI failed: ' + err.message + ' — using manual input'))
@@ -161,7 +171,41 @@ async function mkBug() {
     }
   }
 
-  // Step 5: Attachment
+  // Step 5: Issue Owner search
+  let issueOwnerAccountId = null
+  let issueOwnerName = null
+  const ownerQuery = await input({ message: 'Issue Owner name (press enter to skip):' })
+
+  if (ownerQuery.trim()) {
+    process.stdout.write(chalk.dim('  Searching users...\r'))
+    try {
+      const users = await searchUsers(config.jiraBaseUrl, auth, ownerQuery.trim())
+      if (users.length === 0) {
+        console.log(chalk.yellow('⚠ No users found for "' + ownerQuery + '" — skipping'))
+      } else if (users.length === 1) {
+        issueOwnerAccountId = users[0].accountId
+        issueOwnerName = users[0].displayName
+        console.log(chalk.green('✔') + ' Issue Owner: ' + users[0].displayName)
+      } else {
+        console.log(chalk.dim('\n  Select Issue Owner:'))
+        users.forEach((u, i) => console.log(`  ${i + 1}. ${u.displayName} (${u.emailAddress})`))
+        console.log(`  ${users.length + 1}. Skip\n`)
+        const pick = await input({ message: 'Enter number:' })
+        const idx = parseInt(pick) - 1
+        if (idx >= 0 && idx < users.length) {
+          issueOwnerAccountId = users[idx].accountId
+          issueOwnerName = users[idx].displayName
+          console.log(chalk.green('✔') + ' Issue Owner: ' + users[idx].displayName)
+        } else {
+          console.log(chalk.dim('  No owner selected'))
+        }
+      }
+    } catch (err) {
+      console.log(chalk.yellow('⚠ User search failed: ' + err.message + ' — skipping'))
+    }
+  }
+
+  // Step 7: Attachment
   let attachmentInfo = null
   const attachInput = await input({ message: 'Attach screenshot/file or Google Sheet? (path or URL, enter to skip):' })
 
@@ -268,7 +312,9 @@ async function mkBug() {
   console.log(chalk.dim('  Project:  ') + selectedProject.name + ' (' + selectedProject.key + ')')
   if (selectedEpic) console.log(chalk.dim('  Epic:     ') + selectedEpic.summary + ' (' + selectedEpic.key + ')')
   console.log(chalk.dim('  Priority: ') + chalk.yellow(priority))
+  console.log(chalk.dim('  Environ:  ') + environment)
   if (assigneeAccountId) console.log(chalk.dim('  Assignee: ') + 'Selected user')
+  if (issueOwnerName) console.log(chalk.dim('  Owner:    ') + issueOwnerName)
   if (attachmentInfo) console.log(chalk.dim('  Attach:   ') + attachmentInfo.name)
   console.log(divider)
   console.log('\n  ' + bugAI.preview.split('\n').join('\n  ') + '\n')
@@ -311,6 +357,8 @@ async function mkBug() {
       description: bugAI.adf,
       priority,
       assigneeAccountId,
+      issueOwnerAccountId,
+      environment,
       label: null,
     })
     issueKey = result.issueKey
