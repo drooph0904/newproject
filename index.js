@@ -50,35 +50,83 @@ async function rm(target) {
   const config = await getConfig()
   const auth = Buffer.from(`${config.jiraEmail}:${config.jiraApiToken}`).toString('base64')
 
-  process.stdout.write(chalk.dim('  Looking up issue...\r'))
+  // Step 1: Fetch full issue details
+  process.stdout.write(chalk.dim('  Fetching issue...\r'))
   let issue
   try {
     issue = await fetchIssueDetails(config.jiraBaseUrl, auth, target)
-    console.log('\r' + chalk.dim('  Found: ') + chalk.cyan(issue.key) + ' — ' + issue.summary)
-    console.log(chalk.dim('  Type: ') + issue.issueType + '  Status: ' + issue.status)
   } catch (err) {
-    console.log(chalk.red('\r✗ ' + err.message))
+    console.log(chalk.red('\r  ✗ ' + err.message))
     process.exit(1)
   }
 
+  // Step 2: Fetch additional fields (priority, assignee)
+  let priority = 'Unknown'
+  let assigneeName = 'Unassigned'
+  let descriptionPreview = '(no description)'
+
+  try {
+    const res = await axios.get(
+      `${config.jiraBaseUrl}/rest/api/3/issue/${issue.key}?fields=priority,assignee,description,status,issuetype`,
+      { headers: { 'Authorization': 'Basic ' + auth, 'Accept': 'application/json' } }
+    )
+    priority = res.data.fields.priority?.name || 'None'
+    assigneeName = res.data.fields.assignee?.displayName || 'Unassigned'
+  } catch {
+    // Non-fatal — use what we have from fetchIssueDetails
+  }
+
+  if (issue.descriptionText?.trim()) {
+    descriptionPreview = issue.descriptionText.trim().slice(0, 350)
+    if (issue.descriptionText.trim().length > 350) descriptionPreview += '...'
+  }
+
+  // Step 3: Display the issue details
+  const divider = '─'.repeat(56)
+  console.log('\n' + chalk.cyan(divider))
+  console.log(chalk.cyan('  ISSUE DETAILS'))
+  console.log(chalk.cyan(divider))
+  console.log(chalk.dim('  Key:       ') + chalk.cyan.bold(issue.key))
+  console.log(chalk.dim('  Type:      ') + issue.issueType)
+  console.log(chalk.dim('  Status:    ') + issue.status)
+  console.log(chalk.dim('  Priority:  ') + priority)
+  console.log(chalk.dim('  Assignee:  ') + assigneeName)
+  console.log(chalk.dim('  Summary:   ') + chalk.white(issue.summary))
+  console.log(chalk.cyan(divider))
+  console.log(chalk.dim('  Description:\n'))
+
+  const descLines = descriptionPreview.split('\n')
+  descLines.forEach(line => console.log('  ' + chalk.dim(line)))
+
+  console.log('\n' + chalk.cyan(divider) + '\n')
+
+  // Step 4: Warn clearly
+  console.log(chalk.red('  ⚠  Deleting ') + chalk.red.bold(issue.key) + chalk.red(' is permanent and cannot be undone.'))
   console.log()
-  console.log(chalk.red('  ⚠  This will permanently delete ' + issue.key + '. This cannot be undone.'))
+
+  // Step 5: Confirmation — default NO
   const confirmed = await confirm({
-    message: chalk.red(`Delete ${issue.key} — "${issue.summary}"?`),
+    message: `Delete ${issue.key} — "${issue.summary.slice(0, 60)}"?`,
     default: false,
   })
 
   if (!confirmed) {
-    console.log(chalk.dim('  Cancelled.'))
+    console.log(chalk.dim('\n  Cancelled. Issue was not deleted.\n'))
     process.exit(0)
   }
 
+  // Step 6: Delete
   process.stdout.write(chalk.dim('  Deleting...\r'))
   try {
     await deleteIssue(config.jiraBaseUrl, auth, issue.key)
     console.log(chalk.green('✔ Deleted: ') + chalk.cyan(issue.key) + chalk.dim(' — ' + issue.summary))
+    console.log()
   } catch (err) {
-    console.log(chalk.red('✗ ' + err.message))
+    console.log(chalk.red('\r  ✗ ' + err.message))
+    if (err.message.includes('permission') || err.message.includes('403')) {
+      console.log(chalk.dim('  Tip: You may need "Delete Issues" permission in this Jira project.'))
+      console.log(chalk.dim('  Ask your Jira admin to grant you delete rights, or delete manually in the browser.'))
+    }
     process.exit(1)
   }
 }
@@ -140,165 +188,329 @@ async function mkBug() {
     ]
   })
 
-  // Step 4: Assignee search
+  // Step 4: Assignee search with retry
   let assigneeAccountId = null
-  const assigneeQuery = await input({ message: 'Assignee name (press enter to skip):' })
+  const wantAssignee = await select({
+    message: 'Assign this bug to someone?',
+    choices: [
+      { name: 'Yes — search by name', value: 'yes' },
+      { name: 'No — leave unassigned', value: 'no' },
+    ]
+  })
 
-  if (assigneeQuery.trim()) {
-    process.stdout.write(chalk.dim('  Searching users...\r'))
-    try {
-      const users = await searchUsers(config.jiraBaseUrl, auth, assigneeQuery.trim())
-      if (users.length === 0) {
-        console.log(chalk.yellow('⚠ No users found for "' + assigneeQuery + '" — leaving unassigned'))
-      } else if (users.length === 1) {
-        assigneeAccountId = users[0].accountId
-        console.log(chalk.green('✔') + ' Assigned to: ' + users[0].displayName)
-      } else {
-        console.log(chalk.dim('\n  Select assignee:'))
-        users.forEach((u, i) => console.log(`  ${i + 1}. ${u.displayName} (${u.emailAddress})`))
-        console.log(`  ${users.length + 1}. Skip — leave unassigned\n`)
-        const pick = await input({ message: 'Enter number:' })
-        const idx = parseInt(pick) - 1
-        if (idx >= 0 && idx < users.length) {
-          assigneeAccountId = users[idx].accountId
-          console.log(chalk.green('✔') + ' Assigned to: ' + users[idx].displayName)
+  if (wantAssignee === 'yes') {
+    let assigneeDone = false
+    while (!assigneeDone) {
+      const assigneeQuery = await input({ message: 'Search assignee by name or email:' })
+      if (!assigneeQuery.trim()) { assigneeDone = true; break }
+
+      process.stdout.write(chalk.dim('  Searching users...\r'))
+      try {
+        const users = await searchUsers(config.jiraBaseUrl, auth, assigneeQuery.trim())
+        if (users.length === 0) {
+          console.log(chalk.yellow(`\n  ⚠ No users found for "${assigneeQuery}"`))
+          const retryChoice = await select({
+            message: 'What would you like to do?',
+            choices: [
+              { name: 'Search again', value: 'retry' },
+              { name: 'Skip — leave unassigned', value: 'skip' },
+            ]
+          })
+          if (retryChoice === 'skip') assigneeDone = true
         } else {
-          console.log(chalk.dim('  Unassigned'))
+          console.log(chalk.dim('\n  Select assignee:'))
+          users.forEach((u, i) => {
+            console.log(`  ${i + 1}. ${u.displayName}` + (u.emailAddress ? chalk.dim(` (${u.emailAddress})`) : ''))
+          })
+          console.log(`  ${users.length + 1}. ${chalk.dim('Search again')}`)
+          console.log(`  ${users.length + 2}. ${chalk.dim('Skip — leave unassigned')}\n`)
+
+          const pick = await input({ message: 'Enter number:' })
+          const idx = parseInt(pick) - 1
+          if (idx >= 0 && idx < users.length) {
+            assigneeAccountId = users[idx].accountId
+            console.log(chalk.green('✔') + ' Assigned to: ' + users[idx].displayName)
+            assigneeDone = true
+          } else if (parseInt(pick) === users.length + 1) {
+            // Search again
+          } else if (parseInt(pick) === users.length + 2) {
+            console.log(chalk.dim('  Left unassigned'))
+            assigneeDone = true
+          } else {
+            console.log(chalk.yellow('  Invalid selection — try again'))
+          }
         }
+      } catch (err) {
+        console.log(chalk.yellow('  ⚠ Search failed: ' + err.message))
+        const retryChoice = await select({
+          message: 'What would you like to do?',
+          choices: [
+            { name: 'Try again', value: 'retry' },
+            { name: 'Skip — leave unassigned', value: 'skip' },
+          ]
+        })
+        if (retryChoice === 'skip') assigneeDone = true
       }
-    } catch (err) {
-      console.log(chalk.yellow('⚠ User search failed: ' + err.message + ' — leaving unassigned'))
     }
   }
 
-  // Step 5: Issue Owner search
+  // Step 5: Issue Owner search with retry
   let issueOwnerAccountId = null
   let issueOwnerName = null
-  const ownerQuery = await input({ message: 'Issue Owner name (press enter to skip):' })
+  const wantOwner = await select({
+    message: 'Set an Issue Owner?',
+    choices: [
+      { name: 'Yes — search by name', value: 'yes' },
+      { name: 'No — skip', value: 'no' },
+    ]
+  })
 
-  if (ownerQuery.trim()) {
-    process.stdout.write(chalk.dim('  Searching users...\r'))
-    try {
-      const users = await searchUsers(config.jiraBaseUrl, auth, ownerQuery.trim())
-      if (users.length === 0) {
-        console.log(chalk.yellow('⚠ No users found for "' + ownerQuery + '" — skipping'))
-      } else if (users.length === 1) {
-        issueOwnerAccountId = users[0].accountId
-        issueOwnerName = users[0].displayName
-        console.log(chalk.green('✔') + ' Issue Owner: ' + users[0].displayName)
-      } else {
-        console.log(chalk.dim('\n  Select Issue Owner:'))
-        users.forEach((u, i) => console.log(`  ${i + 1}. ${u.displayName} (${u.emailAddress})`))
-        console.log(`  ${users.length + 1}. Skip\n`)
-        const pick = await input({ message: 'Enter number:' })
-        const idx = parseInt(pick) - 1
-        if (idx >= 0 && idx < users.length) {
-          issueOwnerAccountId = users[idx].accountId
-          issueOwnerName = users[idx].displayName
-          console.log(chalk.green('✔') + ' Issue Owner: ' + users[idx].displayName)
+  if (wantOwner === 'yes') {
+    let ownerDone = false
+    while (!ownerDone) {
+      const ownerQuery = await input({ message: 'Search Issue Owner by name or email:' })
+      if (!ownerQuery.trim()) { ownerDone = true; break }
+
+      process.stdout.write(chalk.dim('  Searching users...\r'))
+      try {
+        const users = await searchUsers(config.jiraBaseUrl, auth, ownerQuery.trim())
+        if (users.length === 0) {
+          console.log(chalk.yellow(`\n  ⚠ No users found for "${ownerQuery}"`))
+          const retryChoice = await select({
+            message: 'What would you like to do?',
+            choices: [
+              { name: 'Search again', value: 'retry' },
+              { name: 'Skip — no owner', value: 'skip' },
+            ]
+          })
+          if (retryChoice === 'skip') ownerDone = true
         } else {
-          console.log(chalk.dim('  No owner selected'))
+          console.log(chalk.dim('\n  Select Issue Owner:'))
+          users.forEach((u, i) => {
+            console.log(`  ${i + 1}. ${u.displayName}` + (u.emailAddress ? chalk.dim(` (${u.emailAddress})`) : ''))
+          })
+          console.log(`  ${users.length + 1}. ${chalk.dim('Search again')}`)
+          console.log(`  ${users.length + 2}. ${chalk.dim('Skip — no owner')}\n`)
+
+          const pick = await input({ message: 'Enter number:' })
+          const idx = parseInt(pick) - 1
+          if (idx >= 0 && idx < users.length) {
+            issueOwnerAccountId = users[idx].accountId
+            issueOwnerName = users[idx].displayName
+            console.log(chalk.green('✔') + ' Issue Owner: ' + users[idx].displayName)
+            ownerDone = true
+          } else if (parseInt(pick) === users.length + 1) {
+            // Search again
+          } else if (parseInt(pick) === users.length + 2) {
+            console.log(chalk.dim('  No owner selected'))
+            ownerDone = true
+          } else {
+            console.log(chalk.yellow('  Invalid selection — try again'))
+          }
         }
+      } catch (err) {
+        console.log(chalk.yellow('  ⚠ Search failed: ' + err.message))
+        const retryChoice = await select({
+          message: 'What would you like to do?',
+          choices: [
+            { name: 'Try again', value: 'retry' },
+            { name: 'Skip — no owner', value: 'skip' },
+          ]
+        })
+        if (retryChoice === 'skip') ownerDone = true
       }
-    } catch (err) {
-      console.log(chalk.yellow('⚠ User search failed: ' + err.message + ' — skipping'))
     }
   }
 
-  // Step 7: Attachment
+  // Step 7: Attachment with retry
   let attachmentInfo = null
-  const attachInput = await input({ message: 'Attach screenshot/file or Google Sheet? (path or URL, enter to skip):' })
+  let attachDone = false
 
-  if (attachInput.trim()) {
+  while (!attachDone) {
+    const attachInput = await input({
+      message: 'Attach screenshot/file or Google Sheet? (path or URL, enter to skip):',
+    })
+
+    if (!attachInput.trim()) {
+      attachDone = true
+      break
+    }
+
     const inputType = detectInputType(attachInput.trim())
+
     if (inputType === 'google-sheet') {
-      attachmentInfo = { type: 'google-sheet', url: attachInput.trim(), label: 'Google Sheet', name: 'Google Sheet link' }
-      console.log(chalk.green('✔') + ' Google Sheet detected')
+      attachmentInfo = {
+        type: 'google-sheet',
+        url: attachInput.trim().replace(/^['"]|['"]$/g, ''),
+        label: 'Google Sheet',
+        name: 'Google Sheet link',
+      }
+      console.log(chalk.green('✔') + ' Google Sheet detected — will be added as comment')
+      attachDone = true
     } else if (inputType === 'file') {
       try {
         const fileInfo = await validateFile(attachInput.trim())
-        attachmentInfo = { type: 'file', filePath: fileInfo.filePath, fileName: fileInfo.fileName, label: getFileTypeLabel(fileInfo.ext), name: fileInfo.fileName }
-        console.log(chalk.green('✔') + ` File: ${fileInfo.fileName}`)
+        attachmentInfo = {
+          type: 'file',
+          filePath: fileInfo.filePath,
+          fileName: fileInfo.fileName,
+          label: getFileTypeLabel(fileInfo.ext),
+          name: fileInfo.fileName,
+        }
+        console.log(chalk.green('✔') + ` File: ${fileInfo.fileName} (${getFileTypeLabel(fileInfo.ext)})`)
+        attachDone = true
       } catch (err) {
-        console.log(chalk.yellow('⚠ ' + err.message + ' — skipping attachment'))
+        console.log(chalk.yellow('⚠ ' + err.message))
+        const retryChoice = await select({
+          message: 'What would you like to do?',
+          choices: [
+            { name: 'Re-enter file path', value: 'retry' },
+            { name: 'Skip attachment', value: 'skip' },
+          ]
+        })
+        if (retryChoice === 'skip') attachDone = true
       }
     } else {
-      console.log(chalk.yellow('⚠ Not a valid file path or Google Sheet URL — skipping'))
+      console.log(chalk.yellow('⚠ Not recognised as a file path or Google Sheet URL'))
+      console.log(chalk.dim('  Tip: paste the file path without quotes, or paste the full Google Sheet URL'))
+      const retryChoice = await select({
+        message: 'What would you like to do?',
+        choices: [
+          { name: 'Re-enter (try again)', value: 'retry' },
+          { name: 'Skip attachment', value: 'skip' },
+        ]
+      })
+      if (retryChoice === 'skip') attachDone = true
     }
   }
 
-  // Step 6: Search for project/space
+  // Step 6: Search for project/space with retry
   let selectedProject = null
   while (!selectedProject) {
-    const projectQuery = await input({ message: 'Search for Jira project/space (type partial name):' })
+    const projectQuery = await input({
+      message: 'Search for Jira project/space (type partial name):',
+    })
+
+    if (!projectQuery.trim()) {
+      console.log(chalk.yellow('  Project is required — please enter a search term'))
+      continue
+    }
+
     process.stdout.write(chalk.dim('  Searching projects...\r'))
 
     try {
       const projects = await searchProjects(config.jiraBaseUrl, auth, projectQuery.trim())
       if (projects.length === 0) {
-        console.log(chalk.yellow('⚠ No projects found for "' + projectQuery + '" — try again'))
-        continue
-      }
-      console.log(chalk.dim('\n  Select project:'))
-      projects.forEach((p, i) => console.log(`  ${i + 1}. [${p.key}] ${p.name}`))
-      console.log()
-      const pick = await input({ message: 'Enter number:' })
-      const idx = parseInt(pick) - 1
-      if (idx >= 0 && idx < projects.length) {
-        selectedProject = projects[idx]
-        console.log(chalk.green('✔') + ' Project: ' + selectedProject.name + ' (' + selectedProject.key + ')')
+        console.log(chalk.yellow(`\n  ⚠ No projects found for "${projectQuery}"`))
+        const retryChoice = await select({
+          message: 'What would you like to do?',
+          choices: [
+            { name: 'Search again', value: 'retry' },
+            { name: 'Cancel bug creation', value: 'cancel' },
+          ]
+        })
+        if (retryChoice === 'cancel') {
+          console.log(chalk.dim('Cancelled.'))
+          process.exit(0)
+        }
       } else {
-        console.log(chalk.yellow('Invalid selection — try again'))
+        console.log(chalk.dim(`\n  Found ${projects.length} project(s):`))
+        projects.forEach((p, i) => {
+          console.log(`  ${i + 1}. [${chalk.cyan(p.key)}] ${p.name}`)
+        })
+        console.log(`  ${projects.length + 1}. ${chalk.dim('Search again with different term')}\n`)
+
+        const pick = await input({ message: 'Enter number:' })
+        const idx = parseInt(pick) - 1
+        if (idx >= 0 && idx < projects.length) {
+          selectedProject = projects[idx]
+          console.log(chalk.green('✔') + ' Project: ' + chalk.white(selectedProject.name) + ' (' + selectedProject.key + ')')
+        } else if (parseInt(pick) === projects.length + 1) {
+          // Search again
+        } else {
+          console.log(chalk.yellow('  Invalid selection — try again'))
+        }
       }
     } catch (err) {
-      console.log(chalk.red('✗ Project search error: ' + err.message))
+      console.log(chalk.red('  ✗ Project search error: ' + err.message))
+      const retryChoice = await select({
+        message: 'What would you like to do?',
+        choices: [
+          { name: 'Try again', value: 'retry' },
+          { name: 'Cancel', value: 'cancel' },
+        ]
+      })
+      if (retryChoice === 'cancel') {
+        console.log(chalk.dim('Cancelled.'))
+        process.exit(0)
+      }
     }
   }
 
-  // Step 7: Search for epic within project
+  // Step 7: Search for epic within project with retry
   let selectedEpic = null
-  const skipEpic = await select({
-    message: 'Link to an epic?',
+  const wantEpic = await select({
+    message: 'Link this bug to an epic?',
     choices: [
       { name: 'Yes — search for an epic', value: 'yes' },
       { name: 'No — create bug without epic', value: 'no' },
     ]
   })
 
-  if (skipEpic === 'yes') {
-    while (!selectedEpic) {
-      const epicQuery = await input({ message: 'Search for epic (type partial name or press enter to list all):' })
+  if (wantEpic === 'yes') {
+    let epicDone = false
+    while (!epicDone) {
+      const epicQuery = await input({
+        message: 'Search for epic (partial name, or press enter to list all):',
+      })
+
       process.stdout.write(chalk.dim('  Searching epics...\r'))
 
       try {
         const epics = await searchEpicsInProject(config.jiraBaseUrl, auth, selectedProject.key, epicQuery.trim())
         if (epics.length === 0) {
-          console.log(chalk.yellow('⚠ No epics found — try different search or press enter to skip'))
-          const skipNow = await select({
+          console.log(chalk.yellow(`\n  ⚠ No epics found` + (epicQuery.trim() ? ` for "${epicQuery}"` : ' in this project')))
+          const retryChoice = await select({
             message: 'What would you like to do?',
             choices: [
-              { name: 'Search again', value: 'retry' },
-              { name: 'Create bug without epic', value: 'skip' },
+              { name: 'Search again with different term', value: 'retry' },
+              { name: 'Skip — create bug without epic', value: 'skip' },
             ]
           })
-          if (skipNow === 'skip') break
-          continue
-        }
-        console.log(chalk.dim('\n  Select epic:'))
-        epics.forEach((e, i) => console.log(`  ${i + 1}. [${e.key}] ${e.summary}`))
-        console.log(`  ${epics.length + 1}. None — no epic\n`)
-        const pick = await input({ message: 'Enter number:' })
-        const idx = parseInt(pick) - 1
-        if (idx >= 0 && idx < epics.length) {
-          selectedEpic = epics[idx]
-          console.log(chalk.green('✔') + ' Epic: ' + selectedEpic.summary + ' (' + selectedEpic.key + ')')
+          if (retryChoice === 'skip') epicDone = true
         } else {
-          console.log(chalk.dim('  No epic selected'))
-          break
+          console.log(chalk.dim(`\n  Found ${epics.length} epic(s):`))
+          epics.forEach((e, i) => {
+            console.log(`  ${i + 1}. [${chalk.cyan(e.key)}] ${e.summary}`)
+          })
+          console.log(`  ${epics.length + 1}. ${chalk.dim('Search again')}`)
+          console.log(`  ${epics.length + 2}. ${chalk.dim('Skip — no epic')}\n`)
+
+          const pick = await input({ message: 'Enter number:' })
+          const idx = parseInt(pick) - 1
+          if (idx >= 0 && idx < epics.length) {
+            selectedEpic = epics[idx]
+            console.log(chalk.green('✔') + ' Epic: ' + chalk.white(selectedEpic.summary) + ' (' + selectedEpic.key + ')')
+            epicDone = true
+          } else if (parseInt(pick) === epics.length + 1) {
+            // Search again
+          } else if (parseInt(pick) === epics.length + 2) {
+            console.log(chalk.dim('  No epic — bug will be created without one'))
+            epicDone = true
+          } else {
+            console.log(chalk.yellow('  Invalid selection — try again'))
+          }
         }
       } catch (err) {
-        console.log(chalk.yellow('⚠ Epic search failed: ' + err.message))
-        break
+        console.log(chalk.yellow('  ⚠ Epic search failed: ' + err.message))
+        const retryChoice = await select({
+          message: 'What would you like to do?',
+          choices: [
+            { name: 'Try again', value: 'retry' },
+            { name: 'Skip — no epic', value: 'skip' },
+          ]
+        })
+        if (retryChoice === 'skip') epicDone = true
       }
     }
   }
