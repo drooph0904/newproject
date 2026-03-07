@@ -175,6 +175,88 @@ export async function setup() {
 
   console.log('\n' + chalk.green('  \u2714 Config saved to ~/.qa-jira/config.json'))
   console.log(chalk.dim('  Run: ') + chalk.cyan('jira task create') + chalk.dim(' to log your first task.\n'))
+
+  const wantGoogle = await select({
+    message: 'Also set up Google Sheets integration? (for jira mk bugsheet)',
+    choices: [
+      { name: 'Yes — set up now', value: 'yes' },
+      { name: 'No — I will run jira setup --google later', value: 'no' },
+    ]
+  })
+  if (wantGoogle === 'yes') await setupGoogle()
+}
+
+export async function setupGoogle() {
+  console.log(chalk.cyan('\n  jira setup --google — Google Sheets integration\n'))
+  console.log(chalk.white('  To create bug sheets, you need a Google Service Account.\n'))
+  console.log(chalk.white('  Follow these steps:\n'))
+  console.log(chalk.dim('  1. Go to: ') + chalk.cyan('https://console.cloud.google.com'))
+  console.log(chalk.dim('  2. Create a new project (or select existing)'))
+  console.log(chalk.dim('  3. Enable these APIs:'))
+  console.log(chalk.dim('       - Google Sheets API'))
+  console.log(chalk.dim('       - Google Drive API'))
+  console.log(chalk.dim('  4. Go to IAM & Admin → Service Accounts'))
+  console.log(chalk.dim('  5. Create a Service Account'))
+  console.log(chalk.dim('  6. Click the account → Keys → Add Key → Create new key → JSON'))
+  console.log(chalk.dim('  7. Download the JSON file to your computer'))
+  console.log(chalk.dim('  8. Paste the path to that JSON file below\n'))
+
+  const openedBrowser = openBrowser('https://console.cloud.google.com')
+  if (openedBrowser) {
+    console.log(chalk.green('  ✔ Opened Google Cloud Console in your browser'))
+  } else {
+    console.log(chalk.yellow('  ⚠ Visit manually: https://console.cloud.google.com'))
+  }
+
+  let serviceAccountPath = ''
+  let validated = false
+
+  while (!validated) {
+    const rawPath = await input({ message: '  Path to service account JSON file:' })
+    const cleanedPath = rawPath.trim().replace(/^['"]|['"]$/g, '')
+
+    if (!fs.existsSync(cleanedPath)) {
+      console.log(chalk.red(`  ✗ File not found: ${cleanedPath}`))
+      const retry = await select({
+        message: '  What would you like to do?',
+        choices: [
+          { name: 'Re-enter path', value: 'retry' },
+          { name: 'Skip for now', value: 'skip' },
+        ]
+      })
+      if (retry === 'skip') {
+        console.log(chalk.dim('  Skipped. Run jira setup --google later.'))
+        return
+      }
+      continue
+    }
+
+    let json
+    try {
+      json = JSON.parse(fs.readFileSync(cleanedPath, 'utf-8'))
+    } catch {
+      console.log(chalk.red('  ✗ File is not valid JSON'))
+      continue
+    }
+
+    if (!json.client_email || !json.private_key) {
+      console.log(chalk.red('  ✗ This does not look like a service account key file'))
+      console.log(chalk.dim('  Expected fields: client_email, private_key'))
+      continue
+    }
+
+    serviceAccountPath = cleanedPath
+    console.log(chalk.green(`  ✔ Service account: ${json.client_email}`))
+    validated = true
+  }
+
+  const existing = await getConfig()
+  const updated = { ...existing, googleServiceAccountPath: serviceAccountPath }
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(updated, null, 2))
+  fs.chmodSync(CONFIG_PATH, 0o600)
+
+  console.log(chalk.green('\n  ✔ Google service account saved to config'))
+  console.log(chalk.dim('  You can now run: ') + chalk.cyan('jira mk bugsheet') + '\n')
 }
 
 export async function getConfig() {
