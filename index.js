@@ -648,16 +648,10 @@ async function mkBugSheet() {
 
   console.log(chalk.cyan('\n  jira mk bugsheet — Export bugs to Google Sheet\n'))
 
-  // Check Google service account is configured
-  if (!config.googleServiceAccountPath) {
+  // Check Google OAuth is configured
+  if (!config.googleRefreshToken) {
     console.log(chalk.red('  ✗ Google Sheets not configured.'))
     console.log(chalk.dim('  Run: ') + chalk.cyan('jira setup --google') + chalk.dim(' to set it up.'))
-    process.exit(1)
-  }
-
-  if (!fs.existsSync(config.googleServiceAccountPath)) {
-    console.log(chalk.red(`  ✗ Service account file not found: ${config.googleServiceAccountPath}`))
-    console.log(chalk.dim('  Run: ') + chalk.cyan('jira setup --google') + chalk.dim(' to update the path.'))
     process.exit(1)
   }
 
@@ -763,7 +757,7 @@ async function mkBugSheet() {
   let sheetUrl, spreadsheetId
   try {
     const result = await createBugSheet({
-      serviceAccountPath: config.googleServiceAccountPath,
+      config,
       epicKey: selectedEpic.key,
       epicSummary: selectedEpic.summary,
       bugs,
@@ -783,7 +777,7 @@ async function mkBugSheet() {
   // Share sheet publicly
   process.stdout.write(chalk.dim('  Setting sharing permissions...\r'))
   try {
-    await shareSheetPublicly(config.googleServiceAccountPath, spreadsheetId)
+    await shareSheetPublicly(config, spreadsheetId)
     console.log(chalk.green('\r  ✔ Sheet shared — anyone with the link can view'))
   } catch (err) {
     console.log(chalk.yellow('\r  ⚠ Could not set sharing: ' + err.message))

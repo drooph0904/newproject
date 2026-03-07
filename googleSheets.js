@@ -1,15 +1,14 @@
 import { google } from 'googleapis'
 import dayjs from 'dayjs'
 
-async function getAuth(serviceAccountPath) {
-  const auth = new google.auth.GoogleAuth({
-    keyFile: serviceAccountPath,
-    scopes: [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive',
-    ],
-  })
-  return auth
+function getAuth(config) {
+  const oauth2Client = new google.auth.OAuth2(
+    config.googleClientId,
+    config.googleClientSecret,
+    'http://localhost:3141'
+  )
+  oauth2Client.setCredentials({ refresh_token: config.googleRefreshToken })
+  return oauth2Client
 }
 
 const HEADERS = [
@@ -28,8 +27,8 @@ function hexToRgb(hex) {
   return { red: r, green: g, blue: b }
 }
 
-export async function createBugSheet({ serviceAccountPath, epicKey, epicSummary, bugs, jiraBaseUrl }) {
-  const auth = await getAuth(serviceAccountPath)
+export async function createBugSheet({ config, epicKey, epicSummary, bugs, jiraBaseUrl }) {
+  const auth = getAuth(config)
   const sheets = google.sheets({ version: 'v4', auth })
   const today = dayjs().format('DD-MMM-YYYY')
 
@@ -137,8 +136,8 @@ export async function createBugSheet({ serviceAccountPath, epicKey, epicSummary,
   return { sheetUrl, spreadsheetId }
 }
 
-export async function shareSheetPublicly(serviceAccountPath, spreadsheetId) {
-  const auth = await getAuth(serviceAccountPath)
+export async function shareSheetPublicly(config, spreadsheetId) {
+  const auth = getAuth(config)
   const drive = google.drive({ version: 'v3', auth })
   await drive.permissions.create({
     fileId: spreadsheetId,

@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import http from 'http'
 import { execSync } from 'child_process'
 import axios from 'axios'
 import { input, password, confirm, select } from '@inquirer/prompts'
@@ -188,75 +189,80 @@ export async function setup() {
 
 export async function setupGoogle() {
   console.log(chalk.cyan('\n  jira setup --google — Google Sheets integration\n'))
-  console.log(chalk.white('  To create bug sheets, you need a Google Service Account.\n'))
+  console.log(chalk.white('  You need to create OAuth 2.0 credentials in Google Cloud Console.\n'))
   console.log(chalk.white('  Follow these steps:\n'))
-  console.log(chalk.dim('  1. Go to: ') + chalk.cyan('https://console.cloud.google.com'))
-  console.log(chalk.dim('  2. Create a new project (or select existing)'))
-  console.log(chalk.dim('  3. Enable these APIs:'))
-  console.log(chalk.dim('       - Google Sheets API'))
-  console.log(chalk.dim('       - Google Drive API'))
-  console.log(chalk.dim('  4. Go to IAM & Admin → Service Accounts'))
-  console.log(chalk.dim('  5. Create a Service Account'))
-  console.log(chalk.dim('  6. Click the account → Keys → Add Key → Create new key → JSON'))
-  console.log(chalk.dim('  7. Download the JSON file to your computer'))
-  console.log(chalk.dim('  8. Paste the path to that JSON file below\n'))
+  console.log(chalk.dim('  1. Go to: APIs & Services → Credentials'))
+  console.log(chalk.dim('  2. Click "Create Credentials" → "OAuth client ID"'))
+  console.log(chalk.dim('  3. If prompted, configure the OAuth consent screen first (External, your email)'))
+  console.log(chalk.dim('  4. Application type: Desktop app'))
+  console.log(chalk.dim('  5. Name: jira-cli (or anything)'))
+  console.log(chalk.dim('  6. Click Create — copy the Client ID and Client Secret below\n'))
 
-  const openedBrowser = openBrowser('https://console.cloud.google.com')
+  const openedBrowser = openBrowser('https://console.cloud.google.com/apis/credentials?project=cli-tool-489505')
   if (openedBrowser) {
     console.log(chalk.green('  ✔ Opened Google Cloud Console in your browser'))
   } else {
-    console.log(chalk.yellow('  ⚠ Visit manually: https://console.cloud.google.com'))
+    console.log(chalk.yellow('  ⚠ Visit manually: https://console.cloud.google.com/apis/credentials'))
   }
 
-  let serviceAccountPath = ''
-  let validated = false
+  const clientId = (await input({ message: '  Google OAuth Client ID:' })).trim()
+  const clientSecret = (await input({ message: '  Google OAuth Client Secret:' })).trim()
 
-  while (!validated) {
-    const rawPath = await input({ message: '  Path to service account JSON file:' })
-    const cleanedPath = rawPath.trim().replace(/^['"]|['"]$/g, '')
+  const { google } = await import('googleapis')
+  const REDIRECT_PORT = 3141
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, `http://localhost:${REDIRECT_PORT}`)
 
-    if (!fs.existsSync(cleanedPath)) {
-      console.log(chalk.red(`  ✗ File not found: ${cleanedPath}`))
-      const retry = await select({
-        message: '  What would you like to do?',
-        choices: [
-          { name: 'Re-enter path', value: 'retry' },
-          { name: 'Skip for now', value: 'skip' },
-        ]
-      })
-      if (retry === 'skip') {
-        console.log(chalk.dim('  Skipped. Run jira setup --google later.'))
-        return
-      }
-      continue
-    }
+  const authUrl = oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive',
+    ],
+  })
 
-    let json
-    try {
-      json = JSON.parse(fs.readFileSync(cleanedPath, 'utf-8'))
-    } catch {
-      console.log(chalk.red('  ✗ File is not valid JSON'))
-      continue
-    }
+  console.log(chalk.cyan('\n  Opening Google sign-in in your browser...'))
+  console.log(chalk.dim('  Sign in and grant access — the terminal will continue automatically.\n'))
+  openBrowser(authUrl)
 
-    if (!json.client_email || !json.private_key) {
-      console.log(chalk.red('  ✗ This does not look like a service account key file'))
-      console.log(chalk.dim('  Expected fields: client_email, private_key'))
-      continue
-    }
+  // Wait for OAuth callback on localhost
+  const code = await new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const params = new URL(req.url, `http://localhost:${REDIRECT_PORT}`).searchParams
+      const code = params.get('code')
+      const error = params.get('error')
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      res.end('<html><body style="font-family:sans-serif;padding:40px;background:#f0f4f8"><h2 style="color:#1565C0">✅ Authorised!</h2><p>You can close this tab and return to your terminal.</p></body></html>')
+      server.close()
+      if (error) reject(new Error(`Auth denied: ${error}`))
+      else resolve(code)
+    })
+    server.listen(REDIRECT_PORT)
+    server.on('error', reject)
+    setTimeout(() => { server.close(); reject(new Error('Timed out waiting for Google auth (2 min)')) }, 120000)
+  })
 
-    serviceAccountPath = cleanedPath
-    console.log(chalk.green(`  ✔ Service account: ${json.client_email}`))
-    validated = true
+  process.stdout.write(chalk.dim('  Exchanging auth code for tokens...\r'))
+  const { tokens } = await oauth2Client.getToken(code)
+
+  if (!tokens.refresh_token) {
+    console.log(chalk.red('\n  ✗ No refresh token received.'))
+    console.log(chalk.dim('  Go to myaccount.google.com/permissions, revoke access for this app, then run jira setup --google again.'))
+    return
   }
 
   const existing = await getConfig()
-  const updated = { ...existing, googleServiceAccountPath: serviceAccountPath }
+  const updated = {
+    ...existing,
+    googleClientId: clientId,
+    googleClientSecret: clientSecret,
+    googleRefreshToken: tokens.refresh_token,
+  }
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(updated, null, 2))
   fs.chmodSync(CONFIG_PATH, 0o600)
 
-  console.log(chalk.green('\n  ✔ Google service account saved to config'))
-  console.log(chalk.dim('  You can now run: ') + chalk.cyan('jira mk bugsheet') + '\n')
+  console.log(chalk.green('\n  ✔ Google Sheets configured — you are signed in'))
+  console.log(chalk.dim('  Run: ') + chalk.cyan('jira mk bugsheet') + '\n')
 }
 
 export async function getConfig() {
