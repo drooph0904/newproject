@@ -288,16 +288,14 @@ export async function fetchBugsInEpic(baseUrl, auth, epicKey) {
 
   for (const jql of jqlOptions) {
     try {
-      const res = await axios.get(
-        `${baseUrl}/rest/api/3/search`,
+      const res = await axios.post(
+        `${baseUrl}/rest/api/3/search/jql`,
         {
-          params: {
-            jql,
-            fields: 'summary,status,priority,assignee,reporter,created,description,issuetype',
-            maxResults: 100,
-          },
-          headers: { 'Authorization': 'Basic ' + auth, 'Accept': 'application/json' }
-        }
+          jql,
+          fields: ['summary', 'status', 'priority', 'assignee', 'reporter', 'created', 'description', 'issuetype'],
+          maxResults: 100,
+        },
+        { headers: { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json', 'Accept': 'application/json' } }
       )
       issues = res.data.issues || []
       fetchSucceeded = true
