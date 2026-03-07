@@ -5,11 +5,13 @@ import dayjs from 'dayjs'
 import fs from 'fs'
 import { execSync } from 'child_process'
 import axios from 'axios'
-import { getConfig, setup } from './config.js'
+import { getConfig, setup, setupGoogle } from './config.js'
+import { createBugSheet, shareSheetPublicly } from './googleSheets.js'
 import {
   getEpicInfo, fetchIssueDetails, createTask, transitionToDone,
   attachFileToIssue, addCommentWithLink, deleteIssue,
   searchProjects, searchEpicsInProject, searchUsers, createBug,
+  fetchBugsInEpic,
 } from './jira.js'
 import { generateDescription, generateBugDescription } from './aiDescriber.js'
 import { makeDoc, makeParagraph, makeText } from './adfBuilder.js'
@@ -23,7 +25,9 @@ async function printHelp() {
   console.log('  ' + chalk.green('jira setup') + '          ' + chalk.dim('First-time configuration'))
   console.log('  ' + chalk.green('jira task create') + '   ' + chalk.dim('Create a daily QA task'))
   console.log('  ' + chalk.green('jira mk bug') + '        ' + chalk.dim('Create a bug with AI-structured description'))
+  console.log('  ' + chalk.green('jira mk bugsheet') + '   ' + chalk.dim('Export all bugs in an epic to a Google Sheet'))
   console.log('  ' + chalk.green('jira rm <ID|URL>') + '  ' + chalk.dim('Delete a Jira issue by key or URL'))
+  console.log('  ' + chalk.green('jira setup --google') + ' ' + chalk.dim('Configure Google Sheets service account'))
   console.log()
 }
 
@@ -40,6 +44,10 @@ if (cmd === 'setup') {
   await rm(target)
 } else if (cmd === 'mk' && sub === 'bug') {
   await mkBug()
+} else if (cmd === 'mk' && sub === 'bugsheet') {
+  await mkBugSheet()
+} else if (cmd === 'setup' && sub === '--google') {
+  await setupGoogle()
 } else {
   await printHelp()
 }
@@ -628,6 +636,183 @@ async function mkBug() {
   console.log(chalk.red('  🐛 Bug Created: ') + chalk.cyan.bold(issueKey))
   console.log(chalk.dim('  🔗 ') + chalk.cyan.underline(issueUrl))
   console.log('═'.repeat(50))
+  console.log(chalk.dim(`\n  Done in ${elapsed}s\n`))
+}
+
+// ── mk bugsheet ───────────────────────────────────────────────────────────────
+
+async function mkBugSheet() {
+  const startTime = Date.now()
+  const config = await getConfig()
+  const auth = Buffer.from(`${config.jiraEmail}:${config.jiraApiToken}`).toString('base64')
+
+  console.log(chalk.cyan('\n  jira mk bugsheet — Export bugs to Google Sheet\n'))
+
+  // Check Google service account is configured
+  if (!config.googleServiceAccountPath) {
+    console.log(chalk.red('  ✗ Google Sheets not configured.'))
+    console.log(chalk.dim('  Run: ') + chalk.cyan('jira setup --google') + chalk.dim(' to set it up.'))
+    process.exit(1)
+  }
+
+  if (!fs.existsSync(config.googleServiceAccountPath)) {
+    console.log(chalk.red(`  ✗ Service account file not found: ${config.googleServiceAccountPath}`))
+    console.log(chalk.dim('  Run: ') + chalk.cyan('jira setup --google') + chalk.dim(' to update the path.'))
+    process.exit(1)
+  }
+
+  // Search for project with retry
+  let selectedProject = null
+  while (!selectedProject) {
+    const projectQuery = await input({ message: 'Search for Jira project/space (partial name):' })
+    if (!projectQuery.trim()) { console.log(chalk.yellow('  Project is required')); continue }
+    process.stdout.write(chalk.dim('  Searching projects...\r'))
+    try {
+      const projects = await searchProjects(config.jiraBaseUrl, auth, projectQuery.trim())
+      if (projects.length === 0) {
+        console.log(chalk.yellow(`\n  ⚠ No projects found for "${projectQuery}"`))
+        const retryChoice = await select({
+          message: '  What would you like to do?',
+          choices: [{ name: 'Search again', value: 'retry' }, { name: 'Cancel', value: 'cancel' }]
+        })
+        if (retryChoice === 'cancel') { console.log(chalk.dim('Cancelled.')); process.exit(0) }
+        continue
+      }
+      console.log(chalk.dim(`\n  Found ${projects.length} project(s):`))
+      projects.forEach((p, i) => console.log(`  ${i + 1}. [${chalk.cyan(p.key)}] ${p.name}`))
+      console.log(`  ${projects.length + 1}. ${chalk.dim('Search again')}\n`)
+      const pick = await input({ message: '  Enter number:' })
+      const idx = parseInt(pick) - 1
+      if (idx >= 0 && idx < projects.length) {
+        selectedProject = projects[idx]
+        console.log(chalk.green('  ✔') + ' Project: ' + chalk.white(selectedProject.name))
+      } else if (parseInt(pick) === projects.length + 1) {
+        // search again
+      } else {
+        console.log(chalk.yellow('  Invalid — try again'))
+      }
+    } catch (err) {
+      console.log(chalk.red('  ✗ ' + err.message))
+      const retry = await select({
+        message: '  What would you like to do?',
+        choices: [{ name: 'Try again', value: 'retry' }, { name: 'Cancel', value: 'cancel' }]
+      })
+      if (retry === 'cancel') process.exit(0)
+    }
+  }
+
+  // Search for epic within project with retry
+  let selectedEpic = null
+  while (!selectedEpic) {
+    const epicQuery = await input({ message: 'Search for epic (partial name, or press enter to list all):' })
+    process.stdout.write(chalk.dim('  Searching epics...\r'))
+    try {
+      const epics = await searchEpicsInProject(config.jiraBaseUrl, auth, selectedProject.key, epicQuery.trim())
+      if (epics.length === 0) {
+        console.log(chalk.yellow(`\n  ⚠ No epics found` + (epicQuery.trim() ? ` for "${epicQuery}"` : '')))
+        const retryChoice = await select({
+          message: '  What would you like to do?',
+          choices: [{ name: 'Search again', value: 'retry' }, { name: 'Cancel', value: 'cancel' }]
+        })
+        if (retryChoice === 'cancel') { console.log(chalk.dim('Cancelled.')); process.exit(0) }
+        continue
+      }
+      console.log(chalk.dim(`\n  Found ${epics.length} epic(s):`))
+      epics.forEach((e, i) => console.log(`  ${i + 1}. [${chalk.cyan(e.key)}] ${e.summary}`))
+      console.log(`  ${epics.length + 1}. ${chalk.dim('Search again')}\n`)
+      const pick = await input({ message: '  Enter number:' })
+      const idx = parseInt(pick) - 1
+      if (idx >= 0 && idx < epics.length) {
+        selectedEpic = epics[idx]
+        console.log(chalk.green('  ✔') + ' Epic: ' + chalk.white(selectedEpic.summary) + ' (' + selectedEpic.key + ')')
+      } else if (parseInt(pick) === epics.length + 1) {
+        // search again
+      } else {
+        console.log(chalk.yellow('  Invalid — try again'))
+      }
+    } catch (err) {
+      console.log(chalk.red('  ✗ ' + err.message))
+      const retry = await select({
+        message: '  What would you like to do?',
+        choices: [{ name: 'Try again', value: 'retry' }, { name: 'Cancel', value: 'cancel' }]
+      })
+      if (retry === 'cancel') process.exit(0)
+    }
+  }
+
+  // Fetch all bugs in the epic
+  process.stdout.write(chalk.cyan('  Fetching bugs from Jira...\r'))
+  let bugs = []
+  try {
+    bugs = await fetchBugsInEpic(config.jiraBaseUrl, auth, selectedEpic.key)
+  } catch (err) {
+    console.log(chalk.red('\r  ✗ Failed to fetch bugs: ' + err.message))
+    process.exit(1)
+  }
+
+  if (bugs.length === 0) {
+    console.log(chalk.yellow(`\r  ⚠ No bugs found in epic ${selectedEpic.key} — ${selectedEpic.summary}`))
+    console.log(chalk.dim('  Only issues with type "Bug" are included in the sheet.'))
+    process.exit(0)
+  }
+
+  console.log(chalk.green(`\r  ✔ Found ${bugs.length} bug(s) in ${selectedEpic.key}`) + chalk.dim(' — generating sheet...'))
+
+  // Create Google Sheet
+  process.stdout.write(chalk.cyan('  Creating Google Sheet...\r'))
+  let sheetUrl, spreadsheetId
+  try {
+    const result = await createBugSheet({
+      serviceAccountPath: config.googleServiceAccountPath,
+      epicKey: selectedEpic.key,
+      epicSummary: selectedEpic.summary,
+      bugs,
+      jiraBaseUrl: config.jiraBaseUrl,
+    })
+    sheetUrl = result.sheetUrl
+    spreadsheetId = result.spreadsheetId
+    console.log(chalk.green('\r  ✔ Google Sheet created'))
+  } catch (err) {
+    console.log(chalk.red('\r  ✗ Sheet creation failed: ' + err.message))
+    if (err.message.includes('PERMISSION_DENIED') || err.message.includes('403')) {
+      console.log(chalk.dim('  Tip: Make sure Google Sheets API and Drive API are enabled in your Google Cloud project.'))
+    }
+    process.exit(1)
+  }
+
+  // Share sheet publicly
+  process.stdout.write(chalk.dim('  Setting sharing permissions...\r'))
+  try {
+    await shareSheetPublicly(config.googleServiceAccountPath, spreadsheetId)
+    console.log(chalk.green('\r  ✔ Sheet shared — anyone with the link can view'))
+  } catch (err) {
+    console.log(chalk.yellow('\r  ⚠ Could not set sharing: ' + err.message))
+  }
+
+  // Post sheet URL as comment on the epic in Jira
+  process.stdout.write(chalk.dim('  Adding sheet link to Jira epic...\r'))
+  try {
+    await addCommentWithLink(config.jiraBaseUrl, auth, selectedEpic.key, `Bug Sheet — ${selectedEpic.summary}`, sheetUrl)
+    console.log(chalk.green('\r  ✔ Sheet URL posted as comment on ' + selectedEpic.key))
+  } catch (err) {
+    console.log(chalk.yellow('\r  ⚠ Could not post Jira comment: ' + err.message))
+  }
+
+  // Open in browser
+  try {
+    const platform = process.platform
+    if (platform === 'darwin') execSync(`open "${sheetUrl}"`)
+    else if (platform === 'win32') execSync(`start "" "${sheetUrl}"`)
+    else execSync(`xdg-open "${sheetUrl}"`)
+  } catch { /* non-fatal */ }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+  console.log('\n' + '═'.repeat(58))
+  console.log(chalk.green('  ✅ Bug Sheet Created!'))
+  console.log(chalk.dim('  Epic:  ') + selectedEpic.key + ' — ' + selectedEpic.summary)
+  console.log(chalk.dim('  Bugs:  ') + bugs.length + ' bugs exported')
+  console.log(chalk.dim('  Sheet: ') + chalk.cyan.underline(sheetUrl))
+  console.log('═'.repeat(58))
   console.log(chalk.dim(`\n  Done in ${elapsed}s\n`))
 }
 
