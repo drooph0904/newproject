@@ -263,6 +263,74 @@ export async function searchUsers(baseUrl, auth, query) {
   }
 }
 
+// ── Bug sheet supporting functions ───────────────────────────────────────────
+
+function extractEnvironment(descriptionText) {
+  if (!descriptionText) return 'UAT'
+  const lower = descriptionText.toLowerCase()
+  if (lower.includes('production') || lower.includes(' prod ') || lower.includes('prod:')) return 'Production'
+  if (lower.includes('staging')) return 'Staging'
+  if (lower.includes(' dev ') || lower.includes('development') || lower.includes('dev env')) return 'Dev'
+  if (lower.includes('qa env') || lower.includes('qa environment')) return 'QA'
+  if (lower.includes('uat')) return 'UAT'
+  return 'UAT'
+}
+
+export async function fetchBugsInEpic(baseUrl, auth, epicKey) {
+  const jqlOptions = [
+    `"Epic Link" = ${epicKey} AND issuetype = Bug ORDER BY created ASC`,
+    `cf[10014] = ${epicKey} AND issuetype = Bug ORDER BY created ASC`,
+    `issueFunction in issuesOf("project = ${epicKey.split('-')[0]} AND key = ${epicKey}") AND issuetype = Bug ORDER BY created ASC`,
+  ]
+
+  let issues = []
+  let fetchSucceeded = false
+
+  for (const jql of jqlOptions) {
+    try {
+      const res = await axios.get(
+        `${baseUrl}/rest/api/3/search`,
+        {
+          params: {
+            jql,
+            fields: 'summary,status,priority,assignee,reporter,created,description,issuetype',
+            maxResults: 100,
+          },
+          headers: { 'Authorization': 'Basic ' + auth, 'Accept': 'application/json' }
+        }
+      )
+      issues = res.data.issues || []
+      fetchSucceeded = true
+      break
+    } catch (err) {
+      if (err.response?.status === 400) continue
+      const msgs = err.response?.data?.errorMessages || [err.message]
+      throw new Error(`Failed to fetch bugs: ${msgs.join(', ')}`)
+    }
+  }
+
+  if (!fetchSucceeded) {
+    throw new Error(`Could not query bugs for epic ${epicKey} — all JQL variants failed`)
+  }
+
+  return issues.map(issue => {
+    const fields = issue.fields
+    const descriptionText = adfToPlainText(fields.description)
+    return {
+      key: issue.key,
+      summary: fields.summary || '',
+      status: fields.status?.name || 'Unknown',
+      priority: fields.priority?.name || 'None',
+      assignee: fields.assignee?.displayName || 'Unassigned',
+      reporter: fields.reporter?.displayName || 'Unknown',
+      created: fields.created ? fields.created.slice(0, 10) : '',
+      description: descriptionText,
+      url: `${baseUrl}/browse/${issue.key}`,
+      environment: extractEnvironment(descriptionText),
+    }
+  })
+}
+
 export async function createBug(baseUrl, auth, {
   projectKey,
   epicKey,
